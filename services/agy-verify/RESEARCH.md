@@ -1,5 +1,24 @@
 # RESEARCH & LOG — tối ưu lệnh `agy` để lấy 2 URL auth KHÔNG cần thao tác TUI
 
+> **LƯU Ý — TÀI LIỆU LỊCH SỬ (2026-09-29).** Thư mục này KHÔNG được nối vào
+> stack: không có Dockerfile, không có service trong compose, không script nào
+> gọi tới. Nó là công cụ nghiên cứu chạy tay trên máy local.
+>
+> Mọi thông số dưới đây được kiểm chứng trên **agy v1.1.11**. Stack production
+> hiện chạy **agy v1.2.12**, và các thay đổi sau đã làm một số kết luận ở đây
+> không còn đúng — đặc biệt:
+>
+> - **1.2.6/1.2.10:** headless lỗi giờ in `AGY_ERROR: {...}` ra stderr và **exit 3**
+>   (trước là exit 1), nên kết luận "exit code 1 = lỗi" ở mục 4 không còn áp dụng.
+> - **1.1.28:** `--print-timeout` hết hạn trả **partial output** và **exit 0**, nên
+>   kết luận "exit 0 = probe thành công" ở mục 4 là sai.
+> - **1.2.6:** timeout headless mặc định đổi từ 5 phút sang **không giới hạn**.
+> - Driver production (`services/agy-dev/agy_oauth_flow.py`) đã được vá đầy đủ cho
+>   các thay đổi này — xem bảng ánh xạ trong `docs/AGY_AUTH_VERIFY_RESEARCH.md`.
+>
+> **Đừng dùng script này làm nguồn sự thật cho logic production.** Hãy dùng
+> `services/agy-dev/agy_oauth_flow.py`.
+
 File này ghi lại toàn bộ quá trình nghiên cứu (nguồn web, thử nghiệm trên máy,
 kết luận từng bước) giống như log của phiên làm việc, kèm đường dẫn rõ ràng.
 Mọi thông số kiểm chứng trên **agy v1.1.11** (Linux, không D-Bus, TZ=UTC).

@@ -111,6 +111,10 @@ TestResults/
 **/Properties/PublishProfiles/*.pubxml
 !**/Properties/PublishProfiles/*.pubxml.user
 
+# ── Python (services/agy-verify, services/agy-dev driver) ──
+__pycache__/
+*.py[cod]
+
 # ── Shared ────────────────────────────────────────────
 # Env & secrets
 appsettings.Development.json

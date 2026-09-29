@@ -23,7 +23,12 @@ needed: print mode skips all of that. The only remaining manual step is opening
 the OAuth URL in a browser and pasting the one-time authorization code
 (or providing it in advance via --code-file).
 
-Key facts verified against agy v1.1.11:
+Key facts verified against agy v1.1.11 (SUPERSEDED — this tool is not wired into
+the stack; the production driver is services/agy-dev/agy_oauth_flow.py, which has
+been adapted for agy 1.2.12). Exit-code and timeout reasoning below no longer
+holds on 1.2.x: failures now exit 3 with an AGY_ERROR line, an expired
+--print-timeout returns partial output with exit 0, and the headless default
+timeout is unlimited. See docs/AGY_AUTH_VERIFY_RESEARCH.md.
   * `agy -p` without a stored token, run under a PTY, prints the OAuth URL and
     waits ~60 s for the code (the print-mode auth wait is not configurable).
   * A truly non-TTY run (CI, pipe) fails fast with "authentication required"

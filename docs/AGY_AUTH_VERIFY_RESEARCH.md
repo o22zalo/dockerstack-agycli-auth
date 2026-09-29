@@ -52,9 +52,111 @@ Relevant changes observed in the official changelog:
 - `1.1.7`: print mode was fixed so a prompt waits until account eligibility is
   complete; the changelog explicitly notes that the previous behavior could let
   ineligible accounts pass the check that interactive mode enforced.
+- `1.1.19`: new `AGY_CLI_HIDE_LOGO` and `AGY_CLI_DISABLE_ESCAPE_SEQUENCE_OPTIMIZATIONS`
+  environment variables.
+- `1.1.23`: prompts entered right after login are queued until background
+  eligibility verification completes, instead of being discarded with an
+  account-verification alert.
+- `1.1.28`: `--print-timeout` expiry now returns the **partial** output and exits
+  **0** with a stderr warning instead of failing; fatal headless errors gain a
+  stable `error:` marker on stderr.
+- `1.2.6`: headless default timeout changed from 5 minutes to **unlimited**;
+  agent/model failures now print a structured `AGY_ERROR: {...}` JSON line on
+  stderr and exit with code **3** instead of 1.
+- `1.2.9`: headless runs that left daemon processes running after exit were fixed
+  (previously they could hang a script reading stdout until EOF); headless runs
+  now also wait for background tasks until the `--print-timeout` deadline, capped
+  at 30 minutes.
+- `1.2.10`: a headless run that streamed part of a response and then ended on a
+  model or agent error now exits with code 3 and prints the `AGY_ERROR` line,
+  instead of exiting 0.
+- `1.2.5`: a credential the sign-in server definitively rejects is now cleared
+  automatically, so a stale token disappears mid-session.
 
 Design consequence: this project uses interactive PTY behavior as the source of
 truth and never adds a `skip eligibility` path.
+
+### 1.2.12 upgrade (2026-09-29)
+
+Deployed version moved from a 1.1.11-era image to **1.2.12**. `agy` is not
+version-pinned by this stack — the upstream installer has no version flag and
+always installs whatever `manifests/<platform>.json` serves. The only control is
+the post-install `AGY_EXPECTED_VERSION` guard in `agy-install.sh`, which is now
+**enabled** (`AGYCLI_AUTH_AGY_EXPECTED_VERSION=1.2.12`).
+
+Two properties of the guard matter when operating it:
+
+- The guard used to be a bare **substring** match, so a partial pin such as `1.2.1`
+  silently accepted `1.2.10`/`1.2.11`/`1.2.12`. `agy-install.sh` now extracts the
+  first version token from `agy --version`, strips a leading `v`, and compares
+  exactly. A pin that is not a full `x.y.z` version, or output that cannot be
+  parsed, fails the build rather than being guessed at.
+- `agy` self-updates in the background during normal runs, and the binary lives in
+  the container's writable layer (only `/root/.gemini` is a volume). The build-time
+  guard therefore gives **no** protection after boot; only the container healthcheck
+  and the per-login `checkAgyBinary()` can observe a runtime drift.
+
+Code changes required by the deltas above, all in
+`services/agy-dev/agy_oauth_flow.py`:
+
+| Upstream change | Consequence | Fix |
+| --- | --- | --- |
+| `1.2.6`/`1.2.10` `AGY_ERROR` + exit 3 | probe failures were reported as `eligibility_inconclusive_no_probe_response`, hiding the real cause | added `classify_agy_error()` / `http_status_from_agy_error()` and a `returncode` check |
+| `1.1.28` partial output on timeout | a truncated probe could be accepted as `verified` if the partial text contained the nonce | truncation markers are checked **before** nonce matching; new `eligibility_probe_truncated` reason |
+| `1.2.9` background-task wait | the old `verify_wait + 30s` budget was too tight | budget widened to `max(90, verify_wait + 60)`, and `AGYCLI_AUTH_AGY_LOGIN_VERIFY_WAIT_SEC` raised `45` → `90` |
+| `1.2.5` auto-cleared credential | a revoked token looked identical to a missing one, so the UI told the user to log in again pointlessly | new `credential_stale_signed_out` reason, treated as non-retryable |
+| `1.1.19` new env vars | banner art and renderer deltas polluted the scraped text | `AGY_CLI_HIDE_LOGO` / `AGY_CLI_DISABLE_ESCAPE_SEQUENCE_OPTIMIZATIONS` set in the image and in both child environments |
+| `1.1.23` queued prompts | the 10s grace window after code submission could cut off the TUI mid background-verification | window raised to 30s |
+
+A diagnostic-only `__AGY_FLOW_DETAIL__` marker was added so the exit code and
+decoded `AGY_ERROR` fields reach the auth log without changing session state.
+`MARKER_RE` in `services/app/src/routes/login.js` was widened to accept it.
+
+Still **not** done, and deliberately so: agy 1.1.8 added
+`--output-format json` to print mode, which would let the eligibility probe
+verify against structured output instead of substring-matching a nonce. That is a
+bigger behavioral change and needs a real container run to validate, so it is left
+for a follow-up rather than folded into this upgrade.
+
+### Empirically verified against the 1.2.12 binary
+
+Verified on 2026-09-29 by building `agy-dev` from the repo `Dockerfile` and running
+the driver inside the container. Three results contradict or refine the changelog:
+
+1. **The spurious installer prefix is still present.** 1.2.0 claims to have removed
+   `ERROR: logging before google.Init` from log output, but agy 1.2.12 still prints
+   it during installation:
+
+   ```text
+   ERROR: logging before google.Init: I0929 03:24:06 installer.go:27] Running Antigravity CLI setup...
+   ```
+
+   This is the reason the driver does **not** match a bare `error:` substring. The
+   `1.1.28` `error:` marker is instead matched anchored to the start of a line
+   (`^error:\s+\S.*$`), with the known `logging before google.init` prefix excluded,
+   so the installer's own noise can never be misread as a fatal headless error.
+
+2. **The real `1.1.28` marker text is** `error: authentication failed or timed out`.
+   Confirmed by running `agy -p "…" --print-timeout 90s` with no valid credential:
+
+   ```text
+   Authentication required. Please visit the URL to log in:
+     https://accounts.google.com/o/oauth2/auth?access_type=offline&…
+   Waiting for authentication (timeout 60s)...
+   Or, paste the authorization code here and press Enter:
+   Error: authentication timed out.
+   error: authentication failed or timed out
+   ```
+
+3. **Authentication failure exits with code 1, not 3.** Only agent/model failures
+   use exit 3. The driver relies on this: it checks the authentication strings
+   before falling through to the `returncode != 0` classification, so an
+   unauthenticated probe is reported as `credential_missing_or_expired` rather than
+   as a generic agent error.
+
+Also confirmed against the real binary: `--print-timeout` now defaults to `0s`
+(unlimited), which is why the driver must keep passing it explicitly, and that
+`--output-format` / `--json-schema` are available for the follow-up work above.
 
 ## Upstream failure modes worth classifying separately
 
@@ -139,14 +241,18 @@ not saved.
 ## New configuration
 
 ```env
-# Optional production guard; empty = accept the version installed upstream.
-AGYCLI_AUTH_AGY_EXPECTED_VERSION=
+# Production guard; empty = accept the version installed upstream.
+# Currently pinned to 1.2.12. Matched exactly (not as a substring), and a pin
+# that is not a full x.y.z version is rejected.
+AGYCLI_AUTH_AGY_EXPECTED_VERSION=1.2.12
 
 # PTY auth/eligibility flow timeout (seconds).
 AGYCLI_AUTH_AGY_LOGIN_FLOW_TIMEOUT_SEC=420
 
 # Maximum wait for a positive probe response (seconds).
-AGYCLI_AUTH_AGY_LOGIN_VERIFY_WAIT_SEC=45
+# Raised 45 -> 90 for agy 1.2.9, which waits for background tasks until the
+# --print-timeout deadline before the response is considered final.
+AGYCLI_AUTH_AGY_LOGIN_VERIFY_WAIT_SEC=90
 
 # Credential file wait after OAuth code submit (milliseconds).
 AGYCLI_AUTH_AGY_CREDENTIAL_CHECK_TIMEOUT_MS=60000
@@ -157,6 +263,22 @@ AGYCLI_AUTH_SESSION_TIMEOUT_MS=600000
 # Extended timeout while the user completes URL #2 (milliseconds).
 AGYCLI_AUTH_VERIFICATION_SESSION_TIMEOUT_MS=1200000
 ```
+
+## Error reasons emitted by the driver
+
+| Reason | Meaning | Retryable |
+| --- | --- | --- |
+| `oauth_token_exchange_failed` | the authorization code was wrong, reused, or not from this PKCE session | no |
+| `agy_binary_missing` | `agy` is not resolvable inside the container | no |
+| `credential_missing_or_expired` | no credential file after code exchange, or AGY demands sign-in | no |
+| `credential_stale_signed_out` | AGY auto-cleared a credential the server definitively rejected (agy 1.2.5) | no |
+| `eligibility_location_unsupported` | account/region is not serviceable; URL #2 will not help | no |
+| `eligibility_network_error` | backend/network failure (x509, DNS, 403/429/5xx, reset) | yes |
+| `eligibility_probe_truncated` | `--print-timeout` expired and AGY returned partial output with exit 0 (agy 1.1.28) | yes |
+| `eligibility_agent_error` | agent/model failure: `AGY_ERROR` JSON, `error:` marker, or a non-zero exit code | yes |
+| `eligibility_failed_without_verify_url` | AGY reported ineligibility but printed no URL #2 | yes |
+| `eligibility_inconclusive_no_probe_response` | no probe response and no error signal at all | yes |
+| `flow_timeout` | the whole PTY flow expired | yes |
 
 ## Operational recommendations
 
@@ -171,3 +293,12 @@ AGYCLI_AUTH_VERIFICATION_SESSION_TIMEOUT_MS=1200000
    final token-saved state.
 5. If AGY changes its TUI wording, prefer adding a new conservative pattern and
    returning `unknown` over guessing `verified`.
+6. When bumping `agy`, change `AGYCLI_CACHE_BUILD` **and** rebuild with
+   `--no-cache`. That value is a Docker build argument with four separate
+   defaults (`.env`, `.env.example`, `compose.apps.yml`, `services/agy-dev/Dockerfile`);
+   a stale BuildKit cache has silently served an old `agy` layer before, and CI
+   (`docker-compose/scripts/ci-build.sh`) reuses `type=gha` cache scopes.
+7. After any `agy` bump, re-run the eligibility probe against a real container
+   before flipping `AGYCLI_AUTH_AGY_EXPECTED_VERSION` on. The guard fails the
+   build rather than rolling back, and the newest upstream release can change TUI
+   strings the onboarding matchers depend on.

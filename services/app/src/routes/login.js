@@ -31,7 +31,7 @@ const log = {
 
 const OAUTH_URL_RE = /https?:\/\/accounts\.google\.com\/o\/oauth2\/auth\?[^\s\x1b\x07<>"'{}|\\^`]+/i;
 const VERIFY_URL_RE = /https?:\/\/accounts\.google\.com\/signin\/continue\?[^\s\x1b\x07<>"'{}|\\^`]+/i;
-const MARKER_RE = /__AGY_(OAUTH_URL|VERIFY_URL|FLOW_STATUS|FLOW_ERROR)__=([^\r\n]+)/g;
+const MARKER_RE = /__AGY_(OAUTH_URL|VERIFY_URL|FLOW_STATUS|FLOW_ERROR|FLOW_DETAIL)__=([^\r\n]+)/g;
 
 function emitAuthLog(sessionId, level, message, details = null) {
   if (level === 'error') log.err(`[${sessionId}] ${message}`);
@@ -81,6 +81,8 @@ function errorMessageForReason(reason) {
       return 'OAuth token exchange failed. Authorization code có thể sai, đã dùng rồi, hoặc không thuộc đúng PKCE session.';
     case 'credential_missing_or_expired':
       return 'Credential AGY không còn tồn tại hoặc đã hết hiệu lực. Hãy Login lại.';
+    case 'credential_stale_signed_out':
+      return 'AGY đã tự sign out vì server từ chối dứt khoát credential này (từ agy 1.2.5). Token cũ đã bị xoá nên không thể dùng lại — cần một tài khoản/đăng nhập mới.';
     case 'eligibility_location_unsupported':
       return 'AGY báo tài khoản/kết nối hiện tại không được hỗ trợ theo location. Đây không phải trường hợp có thể giải quyết bằng URL verify.';
     case 'eligibility_network_error':
@@ -89,6 +91,10 @@ function errorMessageForReason(reason) {
       return 'AGY báo eligibility failed nhưng không in được verification URL. Hãy Check Again hoặc xem log chi tiết.';
     case 'eligibility_inconclusive_no_probe_response':
       return 'AGY không trả về probe response trong thời gian chờ. Không coi là verified; có thể do model/backend/network chậm hoặc lỗi. Hãy Check Again.';
+    case 'eligibility_probe_truncated':
+      return 'Probe hết --print-timeout nên AGY chỉ trả về output một phần. Từ agy 1.1.28, trường hợp này vẫn exit 0 nên không thể coi là verified. Hãy Check Again.';
+    case 'eligibility_agent_error':
+      return 'AGY báo lỗi agent/model khi chạy probe (exit code 3, dòng AGY_ERROR). Thường do quota, lỗi backend hoặc model không phục vụ khu vực này. Xem log chi tiết rồi Check Again.';
     case 'flow_timeout':
       return 'AGY eligibility flow hết thời gian chờ trước khi có kết quả rõ ràng.';
     case 'agy_binary_missing':
@@ -233,9 +239,9 @@ function handleFlowError(sessionId, session, reason) {
       outcome: 'error',
       reason,
       message,
-      retryable: reason !== 'eligibility_location_unsupported' && reason !== 'credential_missing_or_expired',
+      retryable: reason !== 'eligibility_location_unsupported' && reason !== 'credential_missing_or_expired' && reason !== 'credential_stale_signed_out',
     });
-    if (reason === 'eligibility_location_unsupported' || reason === 'credential_missing_or_expired') {
+    if (reason === 'eligibility_location_unsupported' || reason === 'credential_missing_or_expired' || reason === 'credential_stale_signed_out') {
       docker.cleanupFifo(docker.CONFIG.containerName, session.fifoPath).catch(() => {});
       if (session.childProcess) {
         try { session.childProcess.kill('SIGTERM'); } catch (_) {}
@@ -292,6 +298,9 @@ function processStructuredMarkers(sessionId, session, text) {
       else if (kind === 'VERIFY_URL') captureVerifyUrl(sessionId, session, value);
       else if (kind === 'FLOW_STATUS') handleFlowStatus(sessionId, session, value);
       else if (kind === 'FLOW_ERROR') handleFlowError(sessionId, session, value);
+      // Diagnostic-only marker from the driver (e.g. the agy exit code behind
+      // an AGY_ERROR). Never changes session state; only surfaces the cause.
+      else if (kind === 'FLOW_DETAIL') emitAuthLog(sessionId, 'warning', `AGY detail: ${value}`);
     }
   }
 }

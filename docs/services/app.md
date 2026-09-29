@@ -78,9 +78,9 @@ Firebase Realtime Database
 | `AGYCLI_AUTH_AGY_SNAPSHOT_MAX_FILE_BYTES`              | Kích thước tối đa cho mỗi file snapshot (byte).                          |
 | `AGYCLI_AUTH_SESSION_TIMEOUT_MS`                       | Auto-cleanup login session sau N ms (mặc định 600000 = 10 phút).         |
 | `AGYCLI_AUTH_VERIFICATION_SESSION_TIMEOUT_MS`          | Gia hạn session khi đang chờ URL #2/verify (mặc định 1200000 = 20 phút). |
-| `AGYCLI_AUTH_AGY_EXPECTED_VERSION`                      | Optional build guard để chặn upstream AGY version chưa test.             |
+| `AGYCLI_AUTH_AGY_EXPECTED_VERSION`                      | Build guard chặn AGY version chưa test. Đang khoá `1.2.12`. So khớp chính xác, phải ghi đủ 3 thành phần. |
 | `AGYCLI_AUTH_AGY_LOGIN_FLOW_TIMEOUT_SEC`                | Timeout tổng cho PTY auth/eligibility flow (mặc định 420s).              |
-| `AGYCLI_AUTH_AGY_LOGIN_VERIFY_WAIT_SEC`                 | Timeout chờ probe response/eligibility rõ ràng (mặc định 45s).           |
+| `AGYCLI_AUTH_AGY_LOGIN_VERIFY_WAIT_SEC`                 | Timeout chờ probe response/eligibility rõ ràng (mặc định 90s, nâng từ 45s cho agy 1.2.9). |
 | `AGYCLI_AUTH_AGY_CREDENTIAL_CHECK_TIMEOUT_MS`           | Timeout chờ credential sau OAuth code (mặc định 60000ms).                |
 | `AGYCLI_AUTH_FIREBASE_SERVICE_ACCOUNT_BASE64`          | Base64 service account JSON (ưu tiên).                                   |
 | `AGYCLI_AUTH_FIREBASE_SERVICE_ACCOUNT_HOST_PATH`       | Path JSON trên host, mount RO vào `/run/secrets/firebase-adminsdk.json`. |

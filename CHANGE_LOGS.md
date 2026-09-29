@@ -2,6 +2,103 @@
 
 ---
 
+## [2.3.0] — 2026-09-29 — Nâng AGY 1.1.11-era → 1.2.12
+
+### Changed — version pin and cache invalidation
+
+- **`AGYCLI_CACHE_BUILD`** bumped `2026-06-10` → `2026-09-29` in all four places
+  that carry a default: `.env`, `.env.example`, `compose.apps.yml`, and
+  `services/agy-dev/Dockerfile`. The upstream installer has no version flag and
+  always installs the current `latest`, so this argument is the only thing that
+  forces a fresh download; leaving any one of the four stale keeps the old layer.
+- **`AGYCLI_AUTH_AGY_EXPECTED_VERSION`** is now set to `1.2.12` in `.env` and
+  `.env.example`. The guard previously existed but was empty in `.env.example` and
+  absent from `.env` entirely, so nothing was actually enforced. The guard was also
+  a bare substring match, so a partial pin such as `1.2.1` would have silently
+  accepted `1.2.10`–`1.2.12`; it now compares the first version token exactly.
+- **`AGYCLI_AUTH_AGY_LOGIN_VERIFY_WAIT_SEC`** raised `45` → `90` in `.env`,
+  `.env.example`, and the `compose.apps.yml` default.
+
+### Fixed — eligibility probe misclassified real AGY failures
+
+Upstream changes between the previously documented 1.1.11 and 1.2.12 broke outcome
+classification in `services/agy-dev/agy_oauth_flow.py`. Details and the per-change
+mapping table are in `docs/AGY_AUTH_VERIFY_RESEARCH.md`.
+
+- **agy 1.2.6 / 1.2.10** — headless agent and model failures now print an
+  `AGY_ERROR: {...}` JSON line on stderr and exit with code `3`. The probe only
+  scanned stdout text, so every one of these failures was reported as
+  `eligibility_inconclusive_no_probe_response`. Added `classify_agy_error()`,
+  `http_status_from_agy_error()`, a `returncode` check, and a new
+  `eligibility_agent_error` reason. HTTP statuses inside the payload are now
+  classified too, so a 403/429/5xx is still reported as `eligibility_network_error`
+  and a 401 as `credential_missing_or_expired` rather than as an agent error.
+- **agy 1.1.28** — when `--print-timeout` expires, AGY now returns *partial* output
+  and exits `0` with a stderr warning instead of failing. A truncated probe whose
+  partial text happened to contain the nonce was therefore accepted as `verified`.
+  Truncation markers are now checked before nonce matching, and the new
+  `eligibility_probe_truncated` reason is reported.
+- **agy 1.2.9** — headless runs wait for background tasks until the
+  `--print-timeout` deadline. The old `verify_wait + 30s` budget was too tight and
+  widened to `max(90, verify_wait + 60)`.
+- **agy 1.2.5** — a credential the sign-in server definitively rejects is now
+  cleared automatically, which was indistinguishable from a missing credential and
+  made the UI tell users to log in again for nothing. Added the non-retryable
+  `credential_stale_signed_out` reason with deliberately specific match patterns.
+- **agy 1.1.23** — prompts entered right after login are queued until background
+  eligibility verification finishes, so the 10s grace window after code submission
+  could abandon the TUI mid-verification. Raised to 30s.
+- **agy 1.1.19** — set the new `AGY_CLI_HIDE_LOGO` and
+  `AGY_CLI_DISABLE_ESCAPE_SEQUENCE_OPTIMIZATIONS` variables in the image and in both
+  child environments, so scraped text is not polluted by banner art or renderer
+  dirty-rect deltas.
+
+### Added — diagnostics and documentation
+
+- New `__AGY_FLOW_DETAIL__` marker carries the AGY exit code and decoded
+  `AGY_ERROR` fields into the auth log. It is diagnostic only and never changes
+  session state; `MARKER_RE` in `services/app/src/routes/login.js` was widened to
+  accept it, and `errorMessageForReason` now covers the three new reasons.
+- `docs/AGY_AUTH_VERIFY_RESEARCH.md` gained the 1.1.8 → 1.2.12 delta, the
+  guard's substring and runtime-drift caveats, an error-reason table, and two
+  operational notes about cache invalidation and re-validating before a pin. It
+  also records the three places where the real 1.2.12 binary contradicts the
+  changelog.
+
+### Fixed — `error:` marker detection, after measuring the real binary
+
+Running the driver against a real 1.2.12 binary (not just the changelog) found
+three things worth recording, all captured in
+`docs/AGY_AUTH_VERIFY_RESEARCH.md`:
+
+- agy 1.2.12 **still** prints the `ERROR: logging before google.Init` prefix that
+  1.2.0 claimed to have removed. Matching a bare `error:` substring would therefore
+  have misclassified ordinary runs as fatal errors. The `1.1.28` marker is now
+  matched anchored to the start of a line, with that known prefix excluded.
+- The actual marker text is `error: authentication failed or timed out`; it is now
+  in the explicit pattern list.
+- Authentication failure exits with code **1**, not 3. Only agent/model failures
+  use 3, so the authentication checks must run before the generic non-zero-exit
+  classification to avoid reporting a missing credential as an agent error.
+
+### Fixed — stale documentation
+
+- `services/agy-dev/exec-wrapper.sh` claimed the wrapper maps to AGY's
+  non-interactive print mode. Only the eligibility probe uses print mode; login
+  drives the full interactive TUI via `agy -i`, which is required for the PKCE code
+  prompt. Docstring corrected.
+- `services/agy-verify/` is a research tool validated against 1.1.11 and is not
+  wired into the stack. Marked as historical rather than re-validated.
+
+### Known limitation
+
+`agy` self-updates during normal runs and the binary lives in the container's
+writable layer (only `/root/.gemini` is a volume), so the build-time guard offers
+no protection after boot. Only the container healthcheck and the per-login
+`checkAgyBinary()` can observe a runtime drift.
+
+---
+
 ## [2.2.0] — 2026-08-08 — AGY Eligibility / Verification URL #2
 
 ### Added — official second-step account verification flow

@@ -174,15 +174,40 @@ EOF
 }
 
 # ── Detect OS (uname-based, not RUNNER_OS) ─────────────────────
+# Phải bắt được CẢ ba dạng chạy bash trên Windows:
+#   1. WSL2        → uname -r chứa "microsoft"/"wsl"
+#   2. Git Bash /  → uname -s = MINGW64_NT-*, uname -r KHÔNG chứa gì đặc biệt
+#      MSYS2 / Cygwin
+# Trước đây chỉ kiểm tra (1) và Darwin, nên Git Bash bị nhận nhầm là "linux":
+#   - chọn profile webssh-linux / tailscale-linux thay vì bản -windows
+#   - không tắt MSYS path conversion, nên docker.exe nhận các biến kiểu
+#     /root/.gemini/... bị đổi thành C:/Program Files/Git/root/.gemini/...
 UNAME_S="$(uname -s)"
 UNAME_R="$(uname -r)"
 
 if echo "$UNAME_R" | grep -qi "microsoft\|wsl"; then
   _OS="windows"
+elif echo "$UNAME_S" | grep -qiE "MINGW|MSYS|CYGWIN|Windows_NT"; then
+  _OS="windows"
 elif [ "$UNAME_S" = "Darwin" ]; then
   _OS="macos"
 else
   _OS="${CUR_OS:-linux}"
+fi
+
+# ── Tắt MSYS/Git-Bash path conversion khi chạy trên Windows ─────────────
+# Git Bash (MSYS2) tự động đổi mọi đường dẫn POSIX trông giống "/foo/bar"
+# thành đường dẫn Windows trước khi gọi chương trình Windows. `docker.exe`
+# là chương trình Windows, nên các giá trị như
+# AGYCLI_AUTH_AGY_CREDENTIAL_PATH=/root/.gemini/... bị biến thành
+# C:/Program Files/Git/root/.gemini/... và truyền thẳng vào container.
+# Hậu quả: credential được ghi đúng chỗ nhưng backend tìm nhầm đường dẫn,
+# login luôn kết thúc bằng "Credential disappeared before final save".
+# Set cả hai biến để không để sót biến thể nào của MSYS.
+if [ "$_OS" = "windows" ]; then
+  export MSYS_NO_PATHCONV=1
+  export MSYS2_ARG_CONV_EXCL='*'
+  export MSYS2_ENV_CONV_EXCL='*'
 fi
 
 # ── Build --profile arguments from ENABLE_* flags ──────────────

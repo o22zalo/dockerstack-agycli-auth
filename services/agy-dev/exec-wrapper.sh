@@ -2,9 +2,12 @@
 # exec-wrapper.sh
 # Wrapper inside the agy container. Responsibilities:
 #   1) Receive `agy auth-wait` (or compatible) command
-#   2) Map the historical `agy auth-wait` wrapper command to agy's current
-#      non-interactive print mode, which prints the OAuth URL when no
-#      credential is present.
+#   2) Map those wrapper commands onto the Python driver /agy_oauth_flow.py,
+#      which drives TWO DIFFERENT agy surfaces:
+#        - `agy auth-wait`  → PTY over the FULL INTERACTIVE TUI (`agy -i`),
+#          required for the PKCE code prompt and the onboarding screens.
+#        - `agy verify-check` → agy's NON-INTERACTIVE print mode (`agy -p`),
+#          which prints the plain-text response and avoids fragile TUI matching.
 #   3) Run agy under expect with TERM=dumb so the auth prompt stays
 #      line-oriented, while a pseudo-terminal remains available for the auth
 #      code prompt.
@@ -45,7 +48,7 @@ if [[ "${CMD}" == "agy" && "${1:-}" == "auth-wait" ]]; then
     --agy-binary "${RESOLVED_CMD}" \
     --code-file "${AGY_LOGIN_CODE_FILE:-/tmp/agy-auth-code}" \
     --timeout "${AGY_LOGIN_FLOW_TIMEOUT_SEC:-420}" \
-    --verify-wait "${AGY_LOGIN_VERIFY_WAIT_SEC:-45}" \
+    --verify-wait "${AGY_LOGIN_VERIFY_WAIT_SEC:-90}" \
     --prompt "${AGY_LOGIN_PROMPT:-Reply with OK}" \
     "$@"
 fi
@@ -56,7 +59,7 @@ if [[ "${CMD}" == "agy" && "${1:-}" == "verify-check" ]]; then
     --mode eligibility \
     --agy-binary "${RESOLVED_CMD}" \
     --timeout "${AGY_LOGIN_FLOW_TIMEOUT_SEC:-180}" \
-    --verify-wait "${AGY_LOGIN_VERIFY_WAIT_SEC:-45}" \
+    --verify-wait "${AGY_LOGIN_VERIFY_WAIT_SEC:-90}" \
     --prompt "${AGY_LOGIN_PROMPT:-Reply with OK}" \
     "$@"
 fi

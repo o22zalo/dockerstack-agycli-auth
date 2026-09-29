@@ -11,7 +11,7 @@ RUN apt-get update \
 #
 # 💡 Bump AGYCLI_CACHE_BUILD (trong .env) để force rebuild layer này và tải agy mới nhất.
 ARG AGY_INSTALL_URL="https://antigravity.google/cli/install.sh"
-ARG AGYCLI_CACHE_BUILD="2026-06-10"
+ARG AGYCLI_CACHE_BUILD="2026-09-29"
 ARG AGY_EXPECTED_VERSION=""
 COPY agy-install.sh /tmp/agy-install.sh
 RUN AGY_INSTALL_URL="${AGY_INSTALL_URL}" \
@@ -25,6 +25,14 @@ COPY agy_oauth_flow.py /agy_oauth_flow.py
 RUN chmod +x /exec-wrapper.sh /agy_oauth_flow.py
 
 RUN mkdir -p /root/.gemini/antigravity-cli
+
+# ── Runtime defaults inherited by every `docker exec` session ──────────────
+# agy >= 1.1.19 env vars. Both exist so the PTY driver gets clean, complete
+# text to scrape instead of banner art and dirty-rect redraw deltas:
+#   AGY_CLI_HIDE_LOGO                          - suppress banner logo art
+#   AGY_CLI_DISABLE_ESCAPE_SEQUENCE_OPTIMIZATIONS - force full redraws
+ENV AGY_CLI_HIDE_LOGO=1 \
+    AGY_CLI_DISABLE_ESCAPE_SEQUENCE_OPTIMIZATIONS=1
 
 WORKDIR /app
 

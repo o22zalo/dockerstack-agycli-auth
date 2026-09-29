@@ -5,21 +5,36 @@ This intentionally does NOT bypass AGY account eligibility. It drives the normal
 flow, captures the OAuth URL and, when AGY requires it, the official Google account
 verification URL printed by AGY.
 
-The eligibility check uses AGY's NON-INTERACTIVE print mode (`agy -p <prompt>`, the
-`--print` flag: "Run a single prompt non-interactively and print the response").
-This runs the model once and prints the plain-text response, which removes the fragile
-TUI screen matching ("? for shortcuts" etc.) that changed across AGY releases and used
-to leave the flow spinning forever after onboarding.
+Two modes, two different AGY surfaces:
+  * --mode login       drives the FULL INTERACTIVE TUI (`agy -i <prompt>`) over a
+                       PTY. Interactive mode is required for the PKCE code prompt
+                       and the onboarding screens.
+  * --mode eligibility uses NON-INTERACTIVE print mode (`agy -p <prompt>`, the
+                       `--print` flag: "Run a single prompt non-interactively and
+                       print the response"). This runs the model once and prints the
+                       plain-text response, which removes the fragile TUI screen
+                       matching ("? for shortcuts" etc.) that changed across AGY
+                       releases and used to leave the flow spinning forever.
+
+Compatibility notes for AGY >= 1.2.12 (see docs/AGY_AUTH_VERIFY_RESEARCH.md):
+  * 1.2.6/1.2.10 headless failures print `AGY_ERROR: {...}` on stderr and exit 3.
+  * 1.1.28     `--print-timeout` expiry returns PARTIAL output and exits 0.
+  * 1.2.9      headless runs wait for background tasks until the --print-timeout
+               deadline (30-minute cap), so the timeout budget must be generous.
+  * 1.2.5      a definitively rejected credential is auto-cleared mid-session.
+  * 1.1.19     `AGY_CLI_HIDE_LOGO` / `AGY_CLI_DISABLE_ESCAPE_SEQUENCE_OPTIMIZATIONS`.
 
 Structured stdout markers consumed by the web app:
   __AGY_OAUTH_URL__=<url>
   __AGY_VERIFY_URL__=<url>
   __AGY_FLOW_STATUS__=<status>
   __AGY_FLOW_ERROR__=<reason>
+  __AGY_FLOW_DETAIL__=<diagnostic only, never changes session state>
 """
 
 import argparse
 import fcntl
+import json
 import os
 import pty
 import re
@@ -69,6 +84,62 @@ INELIGIBLE_PATTERNS = (
 LOCATION_PATTERNS = (
     "not currently available in your location",
     "user location is not supported for the api use",
+)
+
+# agy >= 1.2.6: khi một turn headless kết thúc vì lỗi agent/model API, CLI in
+# một dòng JSON có tiền tố "AGY_ERROR:" ra stderr rồi exit code 3 (trước đây là 1).
+# agy >= 1.1.28: lỗi fatal headless in ra stderr với marker ổn định "error:".
+# Trước khi có các bản này, mọi lỗi backend đều rơi xuống nhánh cuối và bị báo
+# thành "eligibility_inconclusive_no_probe_response" — che mất nguyên nhân thật.
+AGY_ERROR_MARKER = "agy_error:"
+HEADLESS_ERROR_MARKERS = (
+    "agy_error:",
+    "error: no candidate found",
+    "error: quota exceeded",
+    "error: resource_exhausted",
+    "error: content filter",
+    "error: the response was blocked",
+    "error: authentication failed or timed out",
+)
+
+# Marker "error:" ổn định của 1.1.28 xuất hiện ở đầu dòng, ví dụ quan sát được
+# trên agy 1.2.12: "error: authentication failed or timed out".
+#
+# KHÔNG khớp trần "error:" ở bất kỳ vị trí nào, vì chính installer của agy in
+# dòng giả "ERROR: logging before google.Init: ..." vào stdout/stderr (quan sát
+# thực tế ở 1.2.12) — khớp trần sẽ báo nhầm mọi lần chạy thành agent error.
+HEADLESS_ERROR_LINE_RE = re.compile(r"(?im)^error:\s+\S.*$")
+HEADLESS_ERROR_EXCLUDE = ("logging before google.init",)
+
+# agy >= 1.1.28: khi --print-timeout hết hạn, CLI KHÔNG còn fail cứng nữa mà trả
+# partial output và exit 0 kèm cảnh báo trên stderr. Nếu không phát hiện cảnh
+# báo này, một probe bị cắt ngang có thể bị nhận nhầm là "đã verify".
+TRUNCATION_MARKERS = (
+    "print-timeout",
+    "print timeout",
+    "timed out after",
+    "response may be truncated",
+    "may be truncated",
+    "truncated response",
+)
+
+# Exit code headless báo lỗi agent/model từ 1.2.6 trở đi. 1.1.20 đã sửa để exit
+# code headless khớp với interactive (chỉ lỗi cấp cascade mới fail).
+AGY_AGENT_ERROR_EXIT_CODES = frozenset((3,))
+
+# 1.2.5: server từ chối dứt khoát (vd enterprise account bị revoke) sẽ khiến CLI
+# tự xoá token. Trong flow login điều này biểu hiện giống hệt credential biến
+# mất, nên phải báo riêng để không đề xuất "login lại" một cách vô ích.
+# Cụm từ cố ý đủ cụ thể: chuỗi chung như "credential" dễ trúng màn onboarding.
+STALE_CREDENTIAL_MARKERS = (
+    "sign you out",
+    "you have been signed out",
+    "credentials have been cleared",
+    "credential is no longer valid",
+    "credentials are no longer valid",
+    "token has been revoked",
+    "your session has expired",
+    "please sign in again",
 )
 
 DEFAULT_CREDENTIAL_PATH = os.path.expanduser("~/.gemini/antigravity-cli/antigravity-oauth-token")
@@ -137,6 +208,77 @@ def read_code_file(path: str):
         return None
 
 
+def has_headless_error_marker(low: str) -> bool:
+    """True when the output carries AGY's stable `error:` line marker (1.1.28).
+
+    Anchored to the start of a line, and the known spurious installer prefix is
+    excluded so it cannot be mistaken for a fatal headless error.
+    """
+    if any(m in low for m in HEADLESS_ERROR_MARKERS):
+        return True
+    for match in HEADLESS_ERROR_LINE_RE.finditer(low):
+        line = match.group(0)
+        if any(x in line for x in HEADLESS_ERROR_EXCLUDE):
+            continue
+        return True
+    return False
+
+
+def classify_agy_error(text: str):
+    """Parse the structured AGY_ERROR JSON emitted by agy >= 1.2.6.
+
+    Returns (detail, payload): detail is a short human-readable string for the
+    logs, payload the decoded dict (or None). (None, None) when there is no
+    AGY_ERROR line. The raw line is still dumped to the probe log.
+
+    Case handling matters: the marker is matched case-insensitively but the
+    payload is parsed from the ORIGINAL text, otherwise the JSON keys get
+    lowercased and lose their meaning.
+    """
+    for raw_line in text.splitlines():
+        idx = raw_line.lower().find(AGY_ERROR_MARKER)
+        if idx < 0:
+            continue
+        # Cắt đúng object JSON kể cả khi có text thừa phía sau (log của agy
+        # đôi khi nối thêm chú thích), thay vì parse cả dòng.
+        tail = raw_line[idx + len(AGY_ERROR_MARKER):]
+        start = tail.find("{")
+        end = tail.rfind("}")
+        if start < 0 or end < start:
+            return "", None
+        try:
+            payload = json.loads(tail[start:end + 1])
+        except (ValueError, TypeError):
+            return "", None
+        if not isinstance(payload, dict):
+            return "", None
+        parts = []
+        for key in ("status", "code", "error_id", "retryable"):
+            if key in payload and payload[key] not in (None, ""):
+                parts.append(f"{key}={payload[key]}")
+        return " ".join(parts), payload
+    return None, None
+
+
+def http_status_from_agy_error(payload):
+    """Extract an HTTP status from an AGY_ERROR payload, or None.
+
+    A bare numeric HTTP code is just as useful as the human-readable error text:
+    agy reports permission/quota/rate-limit failures numerically in the JSON.
+    """
+    if not isinstance(payload, dict):
+        return None
+    for key in ("http_status", "httpStatus", "status_code", "code"):
+        value = payload.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int) and 100 <= value <= 599:
+            return value
+        if isinstance(value, str) and value.isdigit() and 100 <= int(value) <= 599:
+            return int(value)
+    return None
+
+
 def run_print_probe(agy: str, probe_token: str, probe_prompt: str,
                     timeout_sec: int, verify_wait: int, mode: str):
     """Run AGY in non-interactive print mode and classify the outcome.
@@ -144,16 +286,26 @@ def run_print_probe(agy: str, probe_token: str, probe_prompt: str,
     Returns (status, error_reason): status in {"verified", "verification_required",
     "error"}, error_reason set when status is "error".
     """
-    print_timeout = max(60, int(verify_wait) + 30)
+    # agy >= 1.2.9 chờ background task tới hết deadline --print-timeout, nên
+    # budget phải rộng hơn verify_wait một cách đáng kể, không chỉ +30s.
+    print_timeout = max(90, int(verify_wait) + 60)
     cmd = [agy, "-p", probe_prompt, "--print-timeout", f"{print_timeout}s"]
     emit_marker("FLOW_STATUS", "eligibility_checking")
+
+    # agy >= 1.1.19: ẩn banner logo + tắt renderer dirty-rect optimization.
+    # Banner art chỉ gây nhiễu khi scrape stdout headless; escape-sequence
+    # optimization có thể làm mất dòng response trong dump khi TERM=dumb.
+    child_env = dict(os.environ, TERM="dumb")
+    child_env.setdefault("AGY_CLI_HIDE_LOGO", "1")
+    child_env.setdefault("AGY_CLI_DISABLE_ESCAPE_SEQUENCE_OPTIMIZATIONS", "1")
+
     try:
         proc = subprocess.run(
             cmd,
             capture_output=True,
-            timeout=print_timeout + 20,
+            timeout=print_timeout + 30,
             stdin=subprocess.DEVNULL,
-            env=dict(os.environ, TERM="dumb"),
+            env=child_env,
         )
     except subprocess.TimeoutExpired:
         dump_tail(f"/tmp/agy-probe-{mode}-{os.getpid()}.txt", b"[probe timeout]")
@@ -163,13 +315,43 @@ def run_print_probe(agy: str, probe_token: str, probe_prompt: str,
     dump_tail(f"/tmp/agy-probe-{mode}-{os.getpid()}.txt", out)
     text = strip_ansi(out)
     low = text.lower()
+    returncode = proc.returncode
 
     # Official verification URL (AGY requires Google account verification).
+    # Checked first: a verify URL is actionable even if the run also errored.
     for m in URL_RE.finditer(out):
         u = clean_url(m.group(0))
         if VERIFY_HOST_PATH in u:
             emit_marker("VERIFY_URL", u.decode("utf-8", "replace"))
             return "verification_required", None
+
+    # ── 1.1.28+: --print-timeout hết hạn trả partial output và exit 0 ────────
+    # Phải kiểm tra TRƯỚC bước so khớp nonce, nếu không partial output chứa
+    # nonce sẽ bị báo nhầm là "verified".
+    if any(m in low for m in TRUNCATION_MARKERS):
+        return "error", "eligibility_probe_truncated"
+
+    # ── 1.2.6 / 1.2.10: AGY_ERROR JSON + exit code 3 ─────────────────────────
+    agy_error, agy_payload = classify_agy_error(text)
+    http_status = http_status_from_agy_error(agy_payload)
+    if agy_error is not None or returncode in AGY_AGENT_ERROR_EXIT_CODES \
+            or has_headless_error_marker(low):
+        # Network/auth lỗi vẫn phải được phân loại riêng, nếu không sẽ thành
+        # "agent error" và che mất việc backend chỉ tạm thời không ổn định.
+        if any(p in low for p in STRONG_NETWORK_PATTERNS) \
+                or "forbidden" in low or "permission denied" in low \
+                or "failed to send request" in low \
+                or http_status in (402, 403, 408, 429, 500, 502, 503, 504):
+            return "error", "eligibility_network_error"
+        if "authentication required" in low or "not signed in" in low \
+                or "select login method" in low or http_status == 401:
+            return "error", "credential_missing_or_expired"
+        detail = f" (agy exit {returncode}"
+        if agy_error:
+            detail += f"; {agy_error}"
+        detail += ")"
+        emit_marker("FLOW_DETAIL", f"eligibility_agent_error{detail}")
+        return "error", "eligibility_agent_error"
 
     # Positive evidence: the model replied with our nonce on a response line
     # (exclude the prompt itself, which contains the same nonce).
@@ -184,6 +366,11 @@ def run_print_probe(agy: str, probe_token: str, probe_prompt: str,
         return "error", "eligibility_failed_without_verify_url"
     if "authentication required" in low or "not signed in" in low or "select login method" in low:
         return "error", "credential_missing_or_expired"
+    if returncode != 0:
+        # Exit non-zero mà không có marker nào khớp: vẫn phải báo lỗi thật
+        # thay vì rơi xuống "không có probe response".
+        emit_marker("FLOW_DETAIL", f"eligibility_agent_error (agy exit {returncode})")
+        return "error", "eligibility_agent_error"
     if any(p in low for p in STRONG_NETWORK_PATTERNS):
         return "error", "eligibility_network_error"
     if "forbidden" in low or "permission denied" in low or "failed to send request" in low:
@@ -196,8 +383,10 @@ def main():
     ap.add_argument("--mode", choices=("login", "eligibility"), default="login")
     ap.add_argument("--code-file", default=None)
     ap.add_argument("--timeout", type=int, default=420)
-    ap.add_argument("--verify-wait", type=int, default=45,
-                    help="Seconds to wait after the probe is submitted before classifying the account.")
+    ap.add_argument("--verify-wait", type=int, default=90,
+                    help="Seconds to wait after the probe is submitted before classifying the account. "
+                         "agy >= 1.2.9 waits for background tasks until the --print-timeout deadline, "
+                         "so 45s was too tight; keep this >= the value in AGYCLI_AUTH_AGY_LOGIN_VERIFY_WAIT_SEC.")
     ap.add_argument("--agy-binary", default=None)
     ap.add_argument("--prompt", default="Reply with OK")
     ap.add_argument("--credential-path", default=DEFAULT_CREDENTIAL_PATH)
@@ -241,6 +430,10 @@ def main():
         env["COLUMNS"] = str(cols)
         env["LINES"] = str(rows)
         env["PATH"] = os.path.dirname(agy) + ":" + env.get("PATH", "")
+        # agy >= 1.1.19: ẩn banner logo và ép full redraw để text scrape
+        # không bị renderer diff bỏ sót. setdefault để Dockerfile ENV thắng.
+        env.setdefault("AGY_CLI_HIDE_LOGO", "1")
+        env.setdefault("AGY_CLI_DISABLE_ESCAPE_SEQUENCE_OPTIMIZATIONS", "1")
         os.execvpe(agy, [agy, "-i", probe_prompt], env)
         os._exit(127)
 
@@ -407,11 +600,23 @@ def main():
             emit_marker("FLOW_ERROR", final_error)
             break
 
+        # agy >= 1.2.5: khi server TỪ CHỐI DỨT KHOÁT credential (vd enterprise
+        # account bị revoke) CLI tự sign out và xoá token. Nếu không phát hiện
+        # ở đây, token biến mất giữa chừng sẽ bị báo nhầm thành
+        # "credential_missing_or_expired" (khiến UI đề xuất Login lại vô ích).
+        if credential_present and any(m in low for m in STALE_CREDENTIAL_MARKERS):
+            final_error = "credential_stale_signed_out"
+            emit_marker("FLOW_ERROR", final_error)
+            break
+
         # The credential is the goal of the login phase. Once it exists (and any
         # immediate onboarding screens have been handled), stop the PTY session
         # and run the eligibility probe in non-interactive print mode.
         if code_sent and credential_present:
-            if trust_done or (code_sent_at is not None and time.time() - code_sent_at > 10):
+            # agy >= 1.1.23: prompt ngay sau login được QUEUE tới khi background
+            # eligibility verification xong (trước đây bị drop kèm alert). Cửa
+            # sổ 10s trước đây dễ cắt ngang lúc CLI còn đang verify nền.
+            if trust_done or (code_sent_at is not None and time.time() - code_sent_at > 30):
                 break
 
         # Code exchange finished without producing a credential.

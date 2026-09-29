@@ -63,14 +63,39 @@ fi
 AGY_VERSION="$(printf '%s' "$AGY_VERSION" | head -n 1 | tr -d '\r')"
 
 if [ -n "$AGY_EXPECTED_VERSION" ]; then
-  case "$AGY_VERSION" in
-    *"$AGY_EXPECTED_VERSION"*) ;;
-    *)
-      echo "[agy-install] FAILED: installed version '$AGY_VERSION' does not match AGY_EXPECTED_VERSION='$AGY_EXPECTED_VERSION'." >&2
-      echo "[agy-install] This guard prevents an untested upstream auto-update from entering the stable stack." >&2
-      exit 1
-      ;;
-  esac
+  # So khớp CHÍNH XÁC trên token version đầu tiên trong output, thay vì
+  # substring. Lý do: so khớp chuỗi khiến pin "1.2.1" cũng match "1.2.10",
+  # "1.2.11" và "1.2.12" — guard trở nên vô dụng đúng lúc ta cần nó nhất.
+  # `agy --version` có thể in nhiều dòng (vd "agy 1.2.12 (build ...)") nên ta
+  # lấy token version đầu tiên. Tiền tố "v" bị bỏ ở cả hai vế vì
+  # validate-env.js chấp nhận cả "1.2.12" lẫn "v1.2.12".
+  extract_version() {
+    printf '%s' "$1" \
+      | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?' \
+      | head -n 1 | sed 's/^v//' || true
+  }
+  AGY_VERSION_TOKEN="$(extract_version "$AGY_VERSION")"
+  AGY_EXPECTED_TOKEN="$(extract_version "$AGY_EXPECTED_VERSION")"
+
+  if [ -z "$AGY_EXPECTED_TOKEN" ]; then
+    echo "[agy-install] FAILED: AGY_EXPECTED_VERSION='$AGY_EXPECTED_VERSION' is not a full x.y.z version." >&2
+    echo "[agy-install] Pin all three components (e.g. 1.2.12), never a prefix." >&2
+    exit 1
+  fi
+
+  if [ -z "$AGY_VERSION_TOKEN" ]; then
+    # Không tìm thấy version trong output: KHÔNG đoán. Fail build.
+    echo "[agy-install] FAILED: could not parse a version out of 'agy --version' output: '$AGY_VERSION'." >&2
+    echo "[agy-install] Refusing to guess; expected '$AGY_EXPECTED_TOKEN'." >&2
+    exit 1
+  fi
+
+  if [ "$AGY_VERSION_TOKEN" != "$AGY_EXPECTED_TOKEN" ]; then
+    echo "[agy-install] FAILED: installed version '$AGY_VERSION_TOKEN' does not match AGY_EXPECTED_VERSION='$AGY_EXPECTED_TOKEN'." >&2
+    echo "[agy-install] This guard prevents an untested upstream auto-update from entering the stable stack." >&2
+    exit 1
+  fi
+  AGY_VERSION="$AGY_VERSION_TOKEN"
 fi
 
 echo "==> [agy-install] OK: agy ${AGY_VERSION} at $(command -v agy)"
