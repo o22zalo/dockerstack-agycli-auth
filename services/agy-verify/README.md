@@ -7,7 +7,7 @@ Google OAuth, **không cần thao tác TUI** (không bấm phím, không chọn 
 | # | URL | Khi nào xuất hiện |
 |---|-----|--------------------|
 | 1 | **OAuth authorization URL** — `https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=...&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback&response_type=code&...` | Khi chưa có token, `agy` in ra để login |
-| 2 | **Eligibility / verify URL** — `https://accounts.google.com/signin/continue?sarp=1&scc=1&continue=https://developers.google.com/gemini-code-assist/auth/auth_success_gemini&...` | Sau login, **chỉ khi Eligibility Check fail** (tài khoản chưa được verify) |
+| 2 | **Eligibility / verify URL** — `https://accounts.google.com/v3/signin/continue?...` (agy 1.4.x; 1.2.x không có `/v3`) | Sau login, **chỉ khi Eligibility Check fail** (tài khoản chưa được verify) |
 
 ## Cách tiếp cận: print mode (`agy -p`) — KHÔNG phải TUI
 

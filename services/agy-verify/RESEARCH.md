@@ -31,7 +31,7 @@ Script `agy_oauth_flow.py` phiên bản đầu phải **điều khiển TUI** `a
 phím bấm qua PTY để có 2 URL:
 
 1. **OAuth URL** — `https://accounts.google.com/o/oauth2/auth?...`
-2. **Verify URL** — `https://accounts.google.com/signin/continue?...`
+2. **Verify URL** — `https://accounts.google.com/v3/signin/continue?...` (agy 1.4.x; 1.2.x: `/signin/continue?...`)
 
 Thao tác TUI gồm: trả lời terminal capability query (DECRQM 2026/2027, DA, DSR),
 chọn menu `1. Google OAuth`, onboarding (color scheme → ToS → trust), submit
@@ -184,7 +184,7 @@ Kết luận:
 | Env | `SSH_*`, `GEMINI_FORCE_FILE_STORAGE=true`, `TZ=UTC`, `TERM=xterm-256color` |
 | URL #1 | regex `accounts.google.com/o/oauth2/auth` trên PTY output |
 | Code | chờ chuỗi `paste the authorization code` / `waiting for authentication` → đọc `--code-file` hoặc console → gửi `code+\r` |
-| URL #2 | regex `accounts.google.com/signin/continue` trên PTY output **và** tail `--log-file` |
+| URL #2 | `is_verify_url()`: mọi URL `accounts.google.com` trừ `/o/oauth2/` — phủ `signin/continue`, `/v3/signin/continue` (1.4.x), `speedbump`, `accountappeals`; áp cho PTY output **và** tail `--log-file` |
 | Token | copy `antigravity-oauth-token` ra outdir khi login thành công |
 | Exit | `0` nếu có URL #1; `1` nếu không (đã login sẵn) |
 

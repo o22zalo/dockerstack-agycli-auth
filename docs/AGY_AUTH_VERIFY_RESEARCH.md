@@ -99,6 +99,55 @@ was baked into the image layer. That is now handled at runtime:
   what `agy_oauth_flow.py` drives. The full OAuth/verify flow still needs a live
   login run to be re-validated end-to-end.
 
+### 1.4.4 verify URL moved to /v3 (2026-10-22, fixed in 2.4.1)
+
+`agy 1.4.4` changed the eligibility/verification URL (#2). Observed live on a
+signed-in account that is not eligible (free/starter quota), via
+`agy -p "<prompt>" --print-timeout 95s`:
+
+```
+stderr: error: Eligibility check failed: Your current account is not eligible
+        for Antigravity. Verify your account to continue.
+stderr: Please verify your account in your browser to continue:
+        https://accounts.google.com/v3/signin/continue?plt=<128 chars>&continue=https://developers.google.com/gemini-code-assist/auth/auth_success_gemini&sarp=1&scc=1&flowName=GlifWebSignIn&authuser
+```
+
+Key facts:
+
+- Path gained a **`/v3`** segment: `accounts.google.com` + `/v3` + `/signin/continue`.
+  Matching the literal `accounts.google.com/signin/continue` therefore fails on
+  every 1.4.x run, which is why URL #2 disappeared from the UI.
+- The URL is printed on **stderr** (the driver already classifies `stdout+stderr`
+  combined).
+- The text starts with `error: Eligibility check failed: ...`, which the generic
+  `error:`/`AGY_ERROR` branch used to claim first → mislabelled
+  `eligibility_agent_error`. Ineligible text is now classified before that branch.
+- URL #1 (OAuth authorize) is unchanged:
+  `accounts.google.com/o/oauth2/auth?...redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback...`
+- The printed URL ends with `&authuser` (no `=N`). It is kept verbatim — never
+  rewrite an official Google URL.
+
+Matching rule now used by the driver (`services/agy-dev/agy_oauth_flow.py`) and
+the standalone tool (`services/agy-verify/agy_oauth_flow.py`):
+
+```python
+def is_verify_url(u: bytes) -> bool:
+    if b"accounts.google.com" not in u:
+        return False
+    if b"/o/oauth2/" in u.lower():   # URL #1 is not a verify URL
+        return False
+    return True
+```
+
+`services/app/src/routes/login.js` applies the same rule in
+`isGoogleVerifyUrl()`. Rationale: AGY has already changed this path once, so
+host-level detection (excluding the OAuth authorize path) is more durable than a
+version-specific path allowlist; a future path change (`speedbump`,
+`accountappeals`, …) keeps working. When AGY prints a verify hint but no URL is
+matched, the driver emits
+`__AGY_FLOW_DETAIL__=verify_url_not_matched: <seen urls>` for diagnostics.
+
+
 ### 1.2.12 upgrade (2026-09-29)
 
 Deployed version moved from a 1.1.11-era image to **1.2.12**. `agy` is not

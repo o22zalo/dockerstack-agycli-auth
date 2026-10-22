@@ -47,8 +47,39 @@ import time
 
 URL_RE = re.compile(rb"(?i)\bhttps?://[^\s\x1b\x07<>\"'{}|\\^`\x00-\x1f]+")
 
-VERIFY_HOST_PATH = b"accounts.google.com/signin/continue"
 OAUTH_HOST_PATH = b"accounts.google.com/o/oauth2/auth"
+
+# URL verify/appeal (#2) — path đổi theo release AGY:
+#   1.2.x: accounts.google.com/signin/continue?...
+#   1.4.4: accounts.google.com/v3/signin/continue?plt=...&continue=...&flowName=GlifWebSignIn
+# Vì vậy so khớp nguyên chuỗi "accounts.google.com/signin/continue" sẽ TRƯỢT
+# trên 1.4.x (có thêm "/v3"). Nhận diện theo host + path linh hoạt thay vì
+# hard-code version.
+VERIFY_URL_RE = re.compile(
+    rb"(?i)accounts\.google\.com/(?:v\d+/)?(?:"
+    rb"signin/continue"
+    rb"|signin/speedbump"
+    rb"|speedbump"
+    rb"|accountappeals"
+    rb")"
+)
+
+
+def is_verify_url(u: bytes) -> bool:
+    """True nếu URL là link verification/appeal của Google Identity.
+
+    Không bao giờ coi OAuth authorize URL là verify URL. Ngoài các path đã
+    biết, mọi URL trên `accounts.google.com` không phải OAuth authorize đều
+    được coi là actionable (#2) — AGY đã đổi path ít nhất một lần (1.4.x:
+    thêm "/v3" trước "signin/continue") và thà đưa link đúng chủ đề còn hơn
+    bỏ mất link verify.
+    """
+    if b"accounts.google.com" not in u:
+        return False
+    if OAUTH_HOST_PATH in u or b"/o/oauth2/" in u.lower():
+        return False
+    return True
+
 
 NETWORK_ERROR_PATTERNS = (
     "connection reset by peer",
@@ -321,7 +352,7 @@ def run_print_probe(agy: str, probe_token: str, probe_prompt: str,
     # Checked first: a verify URL is actionable even if the run also errored.
     for m in URL_RE.finditer(out):
         u = clean_url(m.group(0))
-        if VERIFY_HOST_PATH in u:
+        if is_verify_url(u):
             emit_marker("VERIFY_URL", u.decode("utf-8", "replace"))
             return "verification_required", None
 
@@ -330,6 +361,22 @@ def run_print_probe(agy: str, probe_token: str, probe_prompt: str,
     # nonce sẽ bị báo nhầm là "verified".
     if any(m in low for m in TRUNCATION_MARKERS):
         return "error", "eligibility_probe_truncated"
+
+    # ── Ineligible account: ưu tiên phân loại trước nhánh agent-error ────────
+    # AGY 1.4.4 in "error: Eligibility check failed: ... Verify your account to
+    # continue." ra stderr (exit 1) — nếu không xét trước, nhánh error bên dưới
+    # sẽ báo nhầm thành eligibility_agent_error và UI mất gợi ý verify.
+    if any(p in low for p in INELIGIBLE_PATTERNS):
+        # Chẩn đoán: AGY báo cần verify nhưng không match được URL nào. In ra
+        # các URL accounts.google.com đã thấy để lần sau đổi path còn lần ra.
+        seen = []
+        for m in URL_RE.finditer(out):
+            u = clean_url(m.group(0)).decode("utf-8", "replace")
+            if "accounts.google.com" in u and u not in seen:
+                seen.append(u)
+        if seen:
+            emit_marker("FLOW_DETAIL", "verify_url_not_matched: " + " ".join(seen[:3]))
+        return "error", "eligibility_failed_without_verify_url"
 
     # ── 1.2.6 / 1.2.10: AGY_ERROR JSON + exit code 3 ─────────────────────────
     agy_error, agy_payload = classify_agy_error(text)
@@ -362,8 +409,6 @@ def run_print_probe(agy: str, probe_token: str, probe_prompt: str,
 
     if any(p in low for p in LOCATION_PATTERNS):
         return "error", "eligibility_location_unsupported"
-    if any(p in low for p in INELIGIBLE_PATTERNS):
-        return "error", "eligibility_failed_without_verify_url"
     if "authentication required" in low or "not signed in" in low or "select login method" in low:
         return "error", "credential_missing_or_expired"
     if returncode != 0:
@@ -518,7 +563,7 @@ def main():
                     oauth_url = u
                     emit_marker("OAUTH_URL", u.decode("utf-8", "replace"))
                     emit_marker("FLOW_STATUS", "oauth_url_ready")
-                if verify_url is None and VERIFY_HOST_PATH in u:
+                if verify_url is None and is_verify_url(u):
                     verify_url = u
                     emit_marker("VERIFY_URL", u.decode("utf-8", "replace"))
                     emit_marker("FLOW_STATUS", "verification_required")

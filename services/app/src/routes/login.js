@@ -266,7 +266,12 @@ function captureOAuthUrl(sessionId, session, rawUrl) {
 
 function captureVerifyUrl(sessionId, session, rawUrl) {
   const cleaned = cleanCapturedUrl(rawUrl);
-  if (!cleaned.includes('accounts.google.com/signin/continue')) return;
+  // AGY đổi path verify theo release: 1.2.x là
+  // accounts.google.com/signin/continue, 1.4.x là
+  // accounts.google.com/v3/signin/continue?... . Vì vậy chỉ loại trừ OAuth
+  // authorize URL (#1) thay vì so khớp nguyên path — nếu không, URL #2 của
+  // 1.4.4 bị bỏ qua và UI không hiện được link verify.
+  if (!isGoogleVerifyUrl(cleaned)) return;
   const changed = session.verifyUrl !== cleaned;
   session.verifyUrl = cleaned;
   session.eligibilityStatus = 'verification_required';
@@ -276,6 +281,12 @@ function captureVerifyUrl(sessionId, session, rawUrl) {
     sessions.emitSSE(sessionId, { type: 'verify_url', url: cleaned });
     emitAuthLog(sessionId, 'warning', 'AGY requires account verification; official URL #2 captured.');
   }
+}
+
+function isGoogleVerifyUrl(url) {
+  if (!url || !url.includes('accounts.google.com')) return false;
+  if (url.includes('accounts.google.com/o/oauth2/')) return false;
+  return true;
 }
 
 function processStructuredMarkers(sessionId, session, text) {

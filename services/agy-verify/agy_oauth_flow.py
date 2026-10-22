@@ -2,7 +2,9 @@
 """Capture the two Antigravity CLI (`agy`) auth URLs WITHOUT any TUI interaction.
 
   1. Google OAuth authorization URL  (accounts.google.com/o/oauth2/auth?...)
-  2. Account eligibility / verification URL (accounts.google.com/signin/continue?...)
+  2. Account eligibility / verification URL
+     (accounts.google.com/signin/continue?... ở 1.2.x,
+      accounts.google.com/v3/signin/continue?... từ 1.4.x)
 
 Instead of driving the interactive TUI with key presses (login menu, onboarding
 screens, chat input), this script runs `agy` in PRINT MODE (`agy -p`) under a
@@ -62,8 +64,21 @@ import termios
 import time
 
 OAUTH_RE = re.compile(rb"https://accounts\.google\.com/o/oauth2/auth[^\s\x1b\x07<>\"'{}]+")
-VERIFY_RE = re.compile(rb"https://accounts\.google\.com/signin/continue[^\s\x1b\x07<>\"'{}]+")
+# agy 1.4.x đổi path verify thành accounts.google.com/v3/signin/continue?...
+# nên regex phải cho phép prefix version tuỳ chọn (và các path appeal khác).
+VERIFY_RE = re.compile(
+    rb"https://accounts\.google\.com/(?:v\d+/)?(?:signin/(?:continue|speedbump)|speedbump|accountappeals)[^\s\x1b\x07<>\"'{}]+"
+)
 URL_RE = re.compile(rb"(?i)\bhttps?://[^\s\x1b\x07<>\"'{}|\\^`\x00-\x1f]+")
+
+
+def is_verify_url(u: bytes) -> bool:
+    """URL verification/appeal của Google Identity (không phải OAuth authorize)."""
+    if b"accounts.google.com" not in u:
+        return False
+    if b"/o/oauth2/" in u.lower():
+        return False
+    return True
 
 
 def strip_ansi(data: bytes) -> str:
@@ -301,7 +316,7 @@ def main():
                     oauth_url = u
                     note("OAuth authorization URL captured.")
                     show_url_with_qr("OAuth URL", oauth_url, args.outdir, "oauth-qr.png")
-                if verify_url is None and b"accounts.google.com/signin/continue" in u:
+                if verify_url is None and is_verify_url(u):
                     verify_url = u
                     verify_seen = True
                     note("Verification URL captured from output.")
@@ -313,7 +328,7 @@ def main():
                 urls.append(u)
             if oauth_url is None and b"accounts.google.com/o/oauth2/auth" in u:
                 oauth_url = u
-            if verify_url is None and b"accounts.google.com/signin/continue" in u:
+            if verify_url is None and is_verify_url(u):
                 verify_url = u
                 verify_seen = True
                 note("Verification URL captured from log.")

@@ -2,6 +2,54 @@
 
 ---
 
+## [2.4.1] — 2026-10-22 — Fix mất link verify (#2) trên agy 1.4.4
+
+### Root cause
+
+agy 1.4.4 đổi path của verification URL từ
+`accounts.google.com/signin/continue?...` thành
+`accounts.google.com/v3/signin/continue?plt=...&continue=...&sarp=1&scc=1&flowName=GlifWebSignIn`.
+Driver và backend đều so khớp **nguyên chuỗi** `accounts.google.com/signin/continue`,
+nên URL mới trượt hết: probe phân loại nhầm thành `eligibility_agent_error`
+(dòng `error: Eligibility check failed: ... Verify your account to continue.`
+nằm trên **stderr**) và UI không hiện được link verify. Đây chính là lý do
+"lần 2" (sau khi login xong, bước verify cho account quota starter) không có link.
+
+### Changed
+
+- **`services/agy-dev/agy_oauth_flow.py`** — bỏ `VERIFY_HOST_PATH`, thêm
+  `VERIFY_URL_RE` + `is_verify_url()`: nhận mọi URL `accounts.google.com`
+  trừ OAuth authorize (`/o/oauth2/`), nên không vỡ khi AGY đổi `/v3/` hay path
+  appeal. Dùng chung cho cả probe (`-p`) và vòng PTY login.
+- Xét `INELIGIBLE_PATTERNS` **trước** nhánh `error:`/`AGY_ERROR` để tài khoản
+  chưa verify không bị báo nhầm `eligibility_agent_error`.
+- Khi AGY báo cần verify nhưng không match URL, emit
+  `__AGY_FLOW_DETAIL__=verify_url_not_matched: <urls>` để lần sau đổi format
+  còn lần ra nhanh.
+- **`services/app/src/routes/login.js`** — `captureVerifyUrl()` dùng
+  `isGoogleVerifyUrl()` (whitelist host, loại trừ `/o/oauth2/`) thay vì
+  `includes('accounts.google.com/signin/continue')`.
+- **`services/agy-verify/agy_oauth_flow.py`** (tool standalone) — `VERIFY_RE`
+  cho phép prefix `vN` + `speedbump`/`accountappeals`; capture từ output và từ
+  log tail đều dùng `is_verify_url()`.
+
+### Verified
+
+- `python3 -m py_compile` (2 file), `node --check services/app/src/routes/login.js` OK.
+- Test driver với agy giả lập, URL đúng format 1.4.4 (`/v3/...`):
+  emit `__AGY_VERIFY_URL__` và exit `10` (verification_required).
+- URL format cũ 1.2.12 (không `/v3`) vẫn OK (exit `10`).
+- Tài khoản ineligible **không** có link → `eligibility_failed_without_verify_url`.
+- Unit test `is_verify_url()`: OAuth authorize → `False`; `/v3/signin/continue`,
+  `/signin/continue`, `/accountappeals`, `/speedbump` → `True`.
+
+### Note
+
+Link verify do agy in ra kết thúc bằng `&authuser` (không có `=N`); giữ nguyên
+đúng như agy in, không tự sửa URL official.
+
+---
+
 ## [2.4.0] — 2026-10-22 — AGY 1.2.12 → 1.4.4 + luôn chạy bản mới nhất khi Docker start
 
 ### Changed — luôn latest thay vì pin cứng
