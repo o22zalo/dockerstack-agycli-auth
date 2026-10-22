@@ -2,7 +2,37 @@
 
 ---
 
-## [2.3.0] — 2026-09-29 — Nâng AGY 1.1.11-era → 1.2.12
+## [2.4.0] — 2026-10-22 — AGY 1.2.12 → 1.4.4 + luôn chạy bản mới nhất khi Docker start
+
+### Changed — luôn latest thay vì pin cứng
+
+- **`services/agy-dev/entrypoint.sh`** (mới) — entrypoint của container `agy-dev`.
+  Mỗi lần container start: đọc manifest upstream
+  (`https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_<arch>.json`),
+  so version với `agy --version`, lệch thì tải `install.sh` và cài vào staging
+  (`--dir /tmp/agy-update` với `HOME` tạm), verify rồi `mv` nguyên tử vào
+  `/root/.local/bin/agy`. Tải/cài lỗi → giữ binary cũ và container vẫn start.
+  `AGY_UPDATE_INTERVAL_SEC > 0` bật kiểm tra định kỳ trong lúc chạy.
+- **`services/agy-dev/Dockerfile`** — thêm `ENTRYPOINT ["/entrypoint.sh"]`,
+  copy + chmod entrypoint, bump `AGYCLI_CACHE_BUILD` `2026-09-29` → `2026-10-22`.
+- **`compose.apps.yml`** — truyền `AGY_AUTO_UPDATE`, `AGY_MANIFEST_BASE_URL`,
+  `AGY_UPDATE_INTERVAL_SEC`, `AGY_UPDATE_URL` cho `agy-dev`; bump build-arg
+  `AGYCLI_CACHE_BUILD`; healthcheck `start_period` `10s` → `180s` (entrypoint có
+  thể phải tải ~30MB nén trước khi exec CMD).
+- **`AGYCLI_AUTH_AGY_EXPECTED_VERSION`** để trống trong `.env` / `.env.example`.
+  Giữ pin `1.2.12` sẽ làm build FAIL ngay khi upstream lên 1.4.4.
+
+### Verified
+
+- `bash -n` OK cho `entrypoint.sh` và `agy-install.sh`.
+- Chạy thật entrypoint trong WSL với manifest upstream: cài 1.4.4, `agy --version`
+  → `1.4.4`; chạy lần 2 nhận "đã là bản mới nhất", không tải lại.
+- Manifest không truy cập được → giữ version hiện có, container vẫn start.
+- `AGY_AUTO_UPDATE=0` → bỏ qua kiểm tra, dùng binary trong image.
+- `agy 1.4.4 --help` vẫn còn `-p/--print` và `--print-timeout` mà
+  `agy_oauth_flow.py` dùng.
+
+
 
 ### Changed — version pin and cache invalidation
 

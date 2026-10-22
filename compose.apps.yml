@@ -102,8 +102,14 @@ services:
       context: ./services/agy-dev
       dockerfile: Dockerfile
       args:
-        AGYCLI_CACHE_BUILD: "${AGYCLI_CACHE_BUILD:-2026-09-29}"
+        AGYCLI_CACHE_BUILD: "${AGYCLI_CACHE_BUILD:-2026-10-22}"
         AGY_EXPECTED_VERSION: "${AGYCLI_AUTH_AGY_EXPECTED_VERSION:-}"
+    environment:
+      # Entrypoint tự nâng agy lên bản latest mỗi lần container start.
+      AGY_AUTO_UPDATE: "${AGYCLI_AUTH_AGY_AUTO_UPDATE:-1}"
+      AGY_MANIFEST_BASE_URL: "${AGYCLI_AUTH_AGY_MANIFEST_BASE_URL:-https://antigravity-cli-auto-updater-974169037036.us-central1.run.app}"
+      AGY_UPDATE_INTERVAL_SEC: "${AGYCLI_AUTH_AGY_UPDATE_INTERVAL_SEC:-0}"
+      AGY_UPDATE_URL: "${AGYCLI_AUTH_AGY_UPDATE_URL:-https://antigravity.google/cli/install.sh}"
     volumes:
       - ${DOCKER_VOLUMES_ROOT:-./.docker-volumes}/agy-dev/gemini:/root/.gemini
     tty: true
@@ -122,4 +128,5 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      # Entrypoint có thể tải agy (~30MB nén) khi container start để nâng cấp.
+      start_period: 180s

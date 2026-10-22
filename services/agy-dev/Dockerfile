@@ -10,8 +10,10 @@ RUN apt-get update \
 # NOTE: install.sh sets up `agy` binary at /root/.local/bin/agy
 #
 # 💡 Bump AGYCLI_CACHE_BUILD (trong .env) để force rebuild layer này và tải agy mới nhất.
+#    Lưu ý: build chỉ lấy latest tại thời điểm build. Việc luôn chạy bản mới
+#    nhất ở mỗi lần Docker start do entrypoint.sh đảm nhận (xem Layer 4).
 ARG AGY_INSTALL_URL="https://antigravity.google/cli/install.sh"
-ARG AGYCLI_CACHE_BUILD="2026-09-29"
+ARG AGYCLI_CACHE_BUILD="2026-10-22"
 ARG AGY_EXPECTED_VERSION=""
 COPY agy-install.sh /tmp/agy-install.sh
 RUN AGY_INSTALL_URL="${AGY_INSTALL_URL}" \
@@ -22,7 +24,8 @@ RUN AGY_INSTALL_URL="${AGY_INSTALL_URL}" \
 # ── Layer 3: wrapper script (đổi khi exec-wrapper.sh đổi) ───────
 COPY exec-wrapper.sh /exec-wrapper.sh
 COPY agy_oauth_flow.py /agy_oauth_flow.py
-RUN chmod +x /exec-wrapper.sh /agy_oauth_flow.py
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /exec-wrapper.sh /agy_oauth_flow.py /entrypoint.sh
 
 RUN mkdir -p /root/.gemini/antigravity-cli
 
@@ -35,6 +38,11 @@ ENV AGY_CLI_HIDE_LOGO=1 \
     AGY_CLI_DISABLE_ESCAPE_SEQUENCE_OPTIMIZATIONS=1
 
 WORKDIR /app
+
+# ── Layer 4: luôn chạy agy mới nhất khi container start ────────
+# entrypoint kiểm tra manifest upstream và tự nâng cấp agy trước khi exec CMD.
+# Nếu mạng lỗi / manifest không đọc được → vẫn chạy binary có trong image.
+ENTRYPOINT ["/entrypoint.sh"]
 
 # Keep container alive (stdin_open + tty are set in docker-compose)
 CMD ["tail", "-f", "/dev/null"]

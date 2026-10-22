@@ -294,6 +294,13 @@ checkOptional("AGYCLI_AUTH_VERIFICATION_SESSION_TIMEOUT_MS", "auto-cleanup timeo
 checkOptional("AGYCLI_AUTH_AGY_EXPECTED_VERSION", "optional tested AGY version guard", (v) =>
   /^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(v) ? null : "must look like 1.1.7 or v1.1.7",
 );
+checkOptional("AGYCLI_AUTH_AGY_AUTO_UPDATE", "auto-update agy to latest on container start", (v) =>
+  v === "0" || v === "1" ? null : "must be 0 or 1",
+);
+checkOptional("AGYCLI_AUTH_AGY_UPDATE_INTERVAL_SEC", "re-check agy version every N seconds", (v) => {
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 0 ? null : "must be integer >= 0";
+});
 checkOptional("AGYCLI_AUTH_AGY_LOGIN_FLOW_TIMEOUT_SEC", "overall PTY auth/eligibility flow timeout (seconds)", (v) => {
   const n = Number(v);
   return Number.isInteger(n) && n >= 30 ? null : "must be integer >= 30";

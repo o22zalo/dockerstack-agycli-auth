@@ -76,13 +76,37 @@ Relevant changes observed in the official changelog:
 Design consequence: this project uses interactive PTY behavior as the source of
 truth and never adds a `skip eligibility` path.
 
+### 1.4.4 upgrade + auto-update on container start (2026-10-22)
+
+Deployed version moved **1.2.12 → 1.4.4**. Because the upstream installer always
+serves `latest` from `manifests/<platform>.json`, build-time pinning was never
+reliable, and a Docker restart/recreate (without `--build`) kept whatever binary
+was baked into the image layer. That is now handled at runtime:
+
+- `services/agy-dev/entrypoint.sh` runs before `CMD` on **every** container start.
+  It fetches `https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_<arch>.json`,
+  compares `version` with `agy --version`, and on mismatch installs through the
+  official `install.sh` into a staging dir (`--dir /tmp/agy-update`, temp `HOME`
+  so `/root/.bashrc|.profile|.zshrc` are not appended to), verifies the staging
+  binary, then atomically `mv`s it over `/root/.local/bin/agy`.
+- Failure is non-fatal: unreachable manifest, failed download, or bad checksum →
+  the existing binary is kept and the container still starts.
+- `AGY_AUTO_UPDATE=0` disables the check; `AGY_UPDATE_INTERVAL_SEC=<N>` re-checks
+  every N seconds while the container runs (default `0` = start only).
+- `AGYCLI_AUTH_AGY_EXPECTED_VERSION` is intentionally **empty** now. A stale pin
+  (`1.2.12`) would fail the build the moment upstream serves 1.4.4.
+- `agy 1.4.4 --help` still exposes `-p/--print` and `--print-timeout`, which is
+  what `agy_oauth_flow.py` drives. The full OAuth/verify flow still needs a live
+  login run to be re-validated end-to-end.
+
 ### 1.2.12 upgrade (2026-09-29)
 
 Deployed version moved from a 1.1.11-era image to **1.2.12**. `agy` is not
 version-pinned by this stack — the upstream installer has no version flag and
 always installs whatever `manifests/<platform>.json` serves. The only control is
-the post-install `AGY_EXPECTED_VERSION` guard in `agy-install.sh`, which is now
-**enabled** (`AGYCLI_AUTH_AGY_EXPECTED_VERSION=1.2.12`).
+the post-install `AGY_EXPECTED_VERSION` guard in `agy-install.sh`, which was
+**enabled** for that release (`AGYCLI_AUTH_AGY_EXPECTED_VERSION=1.2.12`). Since
+1.4.4 the guard is empty and the runtime entrypoint owns version selection.
 
 Two properties of the guard matter when operating it:
 
@@ -242,9 +266,15 @@ not saved.
 
 ```env
 # Production guard; empty = accept the version installed upstream.
-# Currently pinned to 1.2.12. Matched exactly (not as a substring), and a pin
-# that is not a full x.y.z version is rejected.
-AGYCLI_AUTH_AGY_EXPECTED_VERSION=1.2.12
+# Since 1.4.4 the stack runs "always latest": the agy-dev entrypoint re-checks
+# the upstream manifest on every container start. Set a full x.y.z here only to
+# hard-lock a version you have already validated (matched exactly, not substring).
+AGYCLI_AUTH_AGY_EXPECTED_VERSION=
+
+# Runtime auto-update (agy-dev entrypoint). 1 = on (default), 0 = off.
+AGYCLI_AUTH_AGY_AUTO_UPDATE=1
+# Re-check upstream every N seconds while the container runs (0 = start only).
+AGYCLI_AUTH_AGY_UPDATE_INTERVAL_SEC=0
 
 # PTY auth/eligibility flow timeout (seconds).
 AGYCLI_AUTH_AGY_LOGIN_FLOW_TIMEOUT_SEC=420
@@ -299,6 +329,10 @@ AGYCLI_AUTH_VERIFICATION_SESSION_TIMEOUT_MS=1200000
    a stale BuildKit cache has silently served an old `agy` layer before, and CI
    (`docker-compose/scripts/ci-build.sh`) reuses `type=gha` cache scopes.
 7. After any `agy` bump, re-run the eligibility probe against a real container
-   before flipping `AGYCLI_AUTH_AGY_EXPECTED_VERSION` on. The guard fails the
-   build rather than rolling back, and the newest upstream release can change TUI
-   strings the onboarding matchers depend on.
+   before locking a version with `AGYCLI_AUTH_AGY_EXPECTED_VERSION`. The guard
+   fails the build rather than rolling back, and the newest upstream release can
+   change TUI strings the onboarding matchers depend on.
+8. Since 1.4.4 the container auto-updates `agy` from the upstream manifest on
+   every start (`services/agy-dev/entrypoint.sh`). If a new release breaks the
+   OAuth/verify matchers, turn the updater off (`AGYCLI_AUTH_AGY_AUTO_UPDATE=0`)
+   and rebuild an image from a known-good commit before redeploying.
